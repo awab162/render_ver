@@ -6,6 +6,7 @@ import random
 import re
 import subprocess
 import sys
+import base64
 from datetime import datetime, timedelta
 from pathlib import Path
 import yt_dlp
@@ -147,14 +148,25 @@ class VideoDownloader:
             opts['extractor_args']['youtube']['po_token'] = [po_token]
             print("BYPASS: Using PO token from YT_PO_TOKEN env var.")
 
-        # --- Optional: cookies (adds extra reliability but NOT required) ---
+        # --- Cookies: REQUIRED on datacenter IPs (Render, Railway, etc.) ---
         cookies_env = CONFIG.get('YOUTUBE_COOKIES_ENV', '')
         if cookies_env and len(cookies_env.strip()) > 10:
             tmp_cookies = Path(__file__).parent / 'cookies_env.txt'
             try:
-                tmp_cookies.write_text(cookies_env, encoding='utf-8')
+                # Try base64 decoding first (recommended — survives Render's env var input)
+                try:
+                    decoded = base64.b64decode(cookies_env.strip()).decode('utf-8')
+                    if '# Netscape' in decoded or '.youtube.com' in decoded:
+                        tmp_cookies.write_text(decoded, encoding='utf-8')
+                        print("BYPASS: Decoded base64 cookies from YOUTUBE_COOKIES env var.")
+                    else:
+                        raise ValueError("Not valid cookie content after decode")
+                except Exception:
+                    # Fallback: treat as raw Netscape cookie text
+                    tmp_cookies.write_text(cookies_env, encoding='utf-8')
+                    print("BYPASS: Using raw cookies from YOUTUBE_COOKIES env var.")
+
                 opts['cookiefile'] = str(tmp_cookies)
-                print("BYPASS: Using cookies from YOUTUBE_COOKIES env var + alt player clients.")
                 return opts
             except Exception as e:
                 print(f"BYPASS: Could not write env cookies to file: {e}")
@@ -165,7 +177,8 @@ class VideoDownloader:
             print("BYPASS: Using local cookies.txt + alt player clients.")
             return opts
 
-        print("BYPASS: No cookies — using alt player clients (mweb/android/tv) to bypass bot detection.")
+        print("BYPASS: WARNING — No cookies found! Downloads WILL fail on datacenter IPs.")
+        print("BYPASS: Set YOUTUBE_COOKIES env var (base64-encoded cookies.txt content).")
         return opts
 
     def _cleanup_loop(self):
