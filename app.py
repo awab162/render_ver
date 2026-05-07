@@ -590,11 +590,13 @@ class VideoDownloader:
             url = f'https://www.youtube.com/watch?v={video_id}'
             
             ydl_opts = {
-                'format': f'bestaudio[abr<={quality}][ext=m4a]/bestaudio[abr<={quality}][ext=webm]/bestaudio[abr<={quality}]/bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best',
+                # Simple & permissive: grab ANY audio stream, FFmpeg converts to MP3
+                'format': 'bestaudio/best',
                 'outtmpl': str(output_template_path),
                 'noplaylist': True,
                 'writethumbnail': False,
                 'writeinfojson': False,
+                'no_check_certificate': True,
                 'postprocessors': [{
                     'key': 'FFmpegExtractAudio',
                     'preferredcodec': 'mp3',
