@@ -1,0 +1,59 @@
+# =============================================================================
+# render.yaml — Render.com Infrastructure as Code
+#
+# HOW TO USE:
+# 1. Push this whole project to a GitHub/GitLab repository
+# 2. Go to https://dashboard.render.com → New → Web Service
+# 3. Connect your repository — Render will auto-detect this file
+# 4. Set TELEGRAM_BOT_TOKEN in the Environment tab
+# 5. Deploy!
+# =============================================================================
+
+services:
+  - type: web
+    name: yt-telegram-bot
+    runtime: python
+    region: frankfurt           # change to oregon / singapore etc. as needed
+    plan: free                  # free tier is fine; upgrade for more RAM/CPU
+
+    # --- Build ---
+    buildCommand: "chmod +x build.sh && ./build.sh"
+
+    # --- Start ---
+    # 1 worker (free tier RAM), 4 threads (handles concurrent downloads),
+    # 120s timeout (long videos take time to upload to Telegram)
+    startCommand: "gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 120 --log-level info"
+
+    # --- Health Check ---
+    # Render will ping this endpoint to confirm the service is alive
+    healthCheckPath: /health
+
+    # --- Environment Variables ---
+    envVars:
+      # REQUIRED — set this in the Render dashboard (do NOT hard-code here)
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false            # means: Render will prompt you to enter this value
+
+      # Auto-populated by Render with your service's public HTTPS URL
+      - key: SERVER_URL
+        fromService:
+          type: web
+          name: yt-telegram-bot
+          property: host
+          # Render populates this as https://yt-telegram-bot.onrender.com
+
+      # OPTIONAL — paste full cookies.txt content here if you need to download
+      # age-restricted or sign-in-required YouTube videos
+      # - key: YOUTUBE_COOKIES
+      #   sync: false
+
+      # Keep files for only 2 hours (ephemeral disk — files vanish on restart)
+      - key: FILE_RETENTION_HOURS
+        value: "2"
+
+      - key: CLEANUP_INTERVAL_HOURS
+        value: "1"
+
+      # Python output is unbuffered — important for real-time Render logs
+      - key: PYTHONUNBUFFERED
+        value: "1"
