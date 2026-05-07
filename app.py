@@ -116,37 +116,56 @@ class VideoDownloader:
         cleanup_thread.start()
 
     def _get_cookie_opts(self):
-        """Return yt-dlp cookie options to bypass YouTube bot detection.
+        """Return yt-dlp options to bypass YouTube bot detection automatically.
 
-        Priority order:
-        1. YOUTUBE_COOKIES env var  — paste your cookies.txt content here on Render.
-        2. cookies.txt file on disk — generated locally by the Chrome extension.
-        3. No cookies              — works fine for most public videos.
+        Strategy (layered — all applied together):
+        1. Alternative player clients — mweb / android / tv_embedded rarely
+           get blocked on datacenter IPs, unlike the default 'web' client.
+        2. Geo-bypass — tells yt-dlp to bypass geo-restrictions.
+        3. Cookies (if available) — from YOUTUBE_COOKIES env var or local file.
+           Cookies are optional — most videos work without them.
         """
-        opts = {}
+        opts = {
+            # --- Core bypass: use player clients that datacenter IPs aren't blocked on ---
+            'extractor_args': {
+                'youtube': {
+                    # Try these clients in order. 'mweb' (mobile web) is the
+                    # most reliable on server IPs; 'android' and 'tv_embedded'
+                    # are fallbacks.
+                    'player_client': ['mweb', 'android', 'tv_embedded', 'web'],
+                },
+            },
+            # Bypass geo-restrictions
+            'geo_bypass': True,
+            # Don't verify SSL (some Render egress IPs have cert issues)
+            'no_check_certificate': True,
+        }
 
-        # 1. Env-var cookies (Render / cloud deployments)
+        # --- Optional: PO (Proof of Origin) token from env var ---
+        po_token = os.environ.get('YT_PO_TOKEN', '')
+        if po_token:
+            opts['extractor_args']['youtube']['po_token'] = [po_token]
+            print("BYPASS: Using PO token from YT_PO_TOKEN env var.")
+
+        # --- Optional: cookies (adds extra reliability but NOT required) ---
         cookies_env = CONFIG.get('YOUTUBE_COOKIES_ENV', '')
         if cookies_env and len(cookies_env.strip()) > 10:
-            # Write to a temp file because yt-dlp expects a file path
             tmp_cookies = Path(__file__).parent / 'cookies_env.txt'
             try:
                 tmp_cookies.write_text(cookies_env, encoding='utf-8')
                 opts['cookiefile'] = str(tmp_cookies)
-                print("COOKIES: Using YOUTUBE_COOKIES environment variable.")
+                print("BYPASS: Using cookies from YOUTUBE_COOKIES env var + alt player clients.")
                 return opts
             except Exception as e:
-                print(f"COOKIES: Could not write env cookies to file: {e}")
+                print(f"BYPASS: Could not write env cookies to file: {e}")
 
-        # 2. Local cookies.txt file (Chrome extension sync)
         cookies_file = Path(__file__).parent / 'cookies.txt'
         if cookies_file.exists() and cookies_file.stat().st_size > 10:
             opts['cookiefile'] = str(cookies_file)
-            print("COOKIES: Using local cookies.txt file.")
+            print("BYPASS: Using local cookies.txt + alt player clients.")
             return opts
 
-        # 3. No cookies — still works for most public YouTube videos
-        print("COOKIES: No cookies found — proceeding without authentication.")
+        print("BYPASS: No cookies — using alt player clients (mweb/android/tv) to bypass bot detection.")
         return opts
 
     def _cleanup_loop(self):
