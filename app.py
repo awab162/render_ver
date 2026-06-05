@@ -116,7 +116,7 @@ class VideoDownloader:
         cleanup_thread = threading.Thread(target=self._cleanup_loop, daemon=True)
         cleanup_thread.start()
 
-    def _get_cookie_opts(self):
+    def _get_cookie_opts(self, force_no_cookies=False):
         """Return yt-dlp options to bypass YouTube bot detection automatically.
 
         Strategy (layered — all applied together):
@@ -126,19 +126,20 @@ class VideoDownloader:
         3. Cookies (if available) — from YOUTUBE_COOKIES env var or local file.
            Cookies are optional — most videos work without them.
         """
+        if force_no_cookies:
+            return {
+                'geo_bypass': True,
+                'no_check_certificate': True,
+            }
+
         opts = {
             # --- Core bypass: use player clients that datacenter IPs aren't blocked on ---
             'extractor_args': {
                 'youtube': {
-                    # Try these clients in order. 'mweb' (mobile web) is the
-                    # most reliable on server IPs; 'android' and 'tv_embedded'
-                    # are fallbacks.
                     'player_client': ['mweb', 'android', 'tv_embedded', 'web'],
                 },
             },
-            # Bypass geo-restrictions
             'geo_bypass': True,
-            # Don't verify SSL (some Render egress IPs have cert issues)
             'no_check_certificate': True,
         }
 
@@ -153,7 +154,7 @@ class VideoDownloader:
         if cookies_env and len(cookies_env.strip()) > 10:
             tmp_cookies = Path(__file__).parent / 'cookies_env.txt'
             try:
-                # Try base64 decoding first (recommended — survives Render's env var input)
+                # Try base64 decoding first (recommended)
                 try:
                     decoded = base64.b64decode(cookies_env.strip()).decode('utf-8')
                     if '# Netscape' in decoded or '.youtube.com' in decoded:
@@ -162,7 +163,6 @@ class VideoDownloader:
                     else:
                         raise ValueError("Not valid cookie content after decode")
                 except Exception:
-                    # Fallback: treat as raw Netscape cookie text
                     tmp_cookies.write_text(cookies_env, encoding='utf-8')
                     print("BYPASS: Using raw cookies from YOUTUBE_COOKIES env var.")
 
@@ -299,9 +299,9 @@ class VideoDownloader:
         return {'filesize': int(estimated_size), 'estimated': True}
 
     def _get_video_format_spec(self, resolution):
-        """Get format specification for size simulation. 
-        NOTE: No ultimate 'best' fallback here — if the specific resolution isn't found,
-        the caller falls back to _improved_estimation() for proper per-resolution estimates.
+        """Get format specification for size simulation.
+        Every branch ends with a universal fallback (bestvideo+bestaudio/best)
+        so yt-dlp never throws a "no matching formats" exception.
         """
         if resolution == 480:
             return (
@@ -312,7 +312,8 @@ class VideoDownloader:
                 f'bestvideo[height<=480][vcodec^=avc1]+bestaudio/'
                 f'bestvideo[height<=480]+bestaudio/'
                 f'best[height=480][ext=mp4]/'
-                f'best[height<=480][height>360]'
+                f'best[height<=480][height>360]/'
+                f'bestvideo+bestaudio/best'
             )
         elif resolution == 360:
             return (
@@ -323,7 +324,8 @@ class VideoDownloader:
                 f'bestvideo[height<=360][vcodec^=avc1]+bestaudio/'
                 f'bestvideo[height<=360]+bestaudio/'
                 f'best[height=360][ext=mp4]/'
-                f'best[height<=360][height>240]'
+                f'best[height<=360][height>240]/'
+                f'bestvideo+bestaudio/best'
             )
         else:
             return (
@@ -334,7 +336,8 @@ class VideoDownloader:
                 f'bestvideo[height<={resolution}][ext=webm]+bestaudio[ext=opus]/'
                 f'bestvideo[height<={resolution}][ext=webm]+bestaudio/'
                 f'best[height<={resolution}][ext=mp4]/'
-                f'best[height<={resolution}]'
+                f'best[height<={resolution}]/'
+                f'bestvideo+bestaudio/best'
             )
 
     def _calculate_total_filesize(self, sim_info):
@@ -383,18 +386,18 @@ class VideoDownloader:
         
         return video_formats
 
-    def _aggressive_size_simulation(self, url, duration, info):
+    def _aggressive_size_simulation(self, url, duration, info, force_no_cookies=False):
         """Fast parallel simulation with reduced retries"""
         try:
             # Drastically reduced timeouts for speed
             info_timeout = 20
             sim_timeout = 30
             
-            print(f"VID_INFO: Using fast timeouts - Info: {info_timeout}s, Simulation: {sim_timeout}s")
+            print(f"VID_INFO: Using fast timeouts - Info: {info_timeout}s, Simulation: {sim_timeout}s (force_no_cookies={force_no_cookies})")
             
             video_formats_out = {}
             audio_formats_out = {}
-
+ 
             base_sim_opts = {
                 'quiet': True,
                 'no_warnings': True,
@@ -408,8 +411,7 @@ class VideoDownloader:
                 'extract_flat': False,
                 'no_check_certificate': True,
                 'retries': 2, # Reduced from 10
-                'fragment_retries': 2,
-                **self._get_cookie_opts(),
+                **self._get_cookie_opts(force_no_cookies=force_no_cookies),
             }
 
             def check_video_size(resolution):
@@ -512,13 +514,35 @@ class VideoDownloader:
             print(f"VID_INFO: Getting initial info for {video_id} with extended timeout...")
             start_time = time.time()
             
-            with yt_dlp.YoutubeDL(base_ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=False) 
+            was_forced_nocookies = False
+            try:
+                with yt_dlp.YoutubeDL(base_ydl_opts) as ydl:
+                    info = ydl.extract_info(url, download=False) 
+            except Exception as e_initial:
+                print(f"VID_INFO: Initial extraction failed with cookies: {e_initial}. Retrying without cookies...")
+                was_forced_nocookies = True
+                nocookie_opts = {
+                    'quiet': True,
+                    'no_warnings': True,
+                    'extract_flat': False,
+                    'skip_download': True,
+                    'no_check_certificate': True,
+                    'socket_timeout': 120,
+                    'http_headers': {
+                        'User-Agent': self._get_random_user_agent(),
+                        'Accept-Language': 'en-US,en;q=0.5',
+                    },
+                    'retries': 5,
+                    'fragment_retries': 5,
+                    **self._get_cookie_opts(force_no_cookies=True)
+                }
+                with yt_dlp.YoutubeDL(nocookie_opts) as ydl:
+                    info = ydl.extract_info(url, download=False)
             
             duration = info.get('duration', 0)
             initial_time = time.time() - start_time
-            print(f"VID_INFO: Initial info for {video_id} (duration: {duration}s) fetched in {initial_time:.2f}s")
-
+            print(f"VID_INFO: Initial info for {video_id} (duration: {duration}s) fetched in {initial_time:.2f}s (was_forced_nocookies={was_forced_nocookies})")
+ 
             if not duration:
                 print(f"VID_INFO: Could not determine duration for {video_id}. Using improved estimations.")
                 # Use improved estimation with default 10-minute duration
@@ -536,11 +560,15 @@ class VideoDownloader:
                     'estimated_only': True,
                     'message': 'Could not determine duration, using improved estimation'
                 }
-
+ 
             # No duration limit - try aggressive simulation for ALL videos
             print(f"VID_INFO: Attempting aggressive simulation for {video_id} ({duration}s duration)...")
-            actual_sizes = self._aggressive_size_simulation(url, duration, info)
+            actual_sizes = self._aggressive_size_simulation(url, duration, info, force_no_cookies=was_forced_nocookies)
             
+            if not actual_sizes and not was_forced_nocookies:
+                print(f"VID_INFO: Aggressive simulation with cookies failed. Retrying without cookies...")
+                actual_sizes = self._aggressive_size_simulation(url, duration, info, force_no_cookies=True)
+
             if actual_sizes:
                 total_time = time.time() - start_time
                 print(f"VID_INFO: Aggressive simulation completed for {video_id} in {total_time:.2f}s total")
@@ -650,9 +678,21 @@ class VideoDownloader:
             
             self._update_status(request_id, 'processing', 'Starting audio download with yt-dlp...')
             
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                self._update_status(request_id, 'processing', 'Extracting audio...')
-                ydl.download([url])
+            try:
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    self._update_status(request_id, 'processing', 'Extracting audio...')
+                    ydl.download([url])
+            except Exception as e_download:
+                print(f"AUDIO_DOWNLOAD: Initial audio download failed: {e_download}. Retrying without cookies...")
+                self._update_status(request_id, 'processing', 'Initial audio download failed. Retrying without cookies...')
+                nocookie_opts = {
+                    **ydl_opts,
+                    **self._get_cookie_opts(force_no_cookies=True)
+                }
+                nocookie_opts.pop('cookiefile', None)
+                with yt_dlp.YoutubeDL(nocookie_opts) as ydl:
+                    self._update_status(request_id, 'processing', 'Extracting audio (no cookies fallback)...')
+                    ydl.download([url])
 
             final_filename_from_hook = self.final_filenames.pop(progress_hook_key, None)
 
@@ -724,7 +764,7 @@ class VideoDownloader:
         elif d['status'] == 'error':
             print(f"yt-dlp reported an error for {progress_hook_key}: {d.get('error')}")
 
-    def _get_ydl_options(self, output_template_path, resolution, progress_hook_key, codec=None):
+    def _get_ydl_options(self, output_template_path, resolution, progress_hook_key, codec=None, force_no_cookies=False):
         # codec: None/'h264' (default) or 'hevc' (h265). HEVC may not be available; fallbacks included
         if codec == 'hevc':
             # Prefer HEVC in MP4 if available, then fallback to any HEVC, then generic best
@@ -771,7 +811,7 @@ class VideoDownloader:
             'ignoreerrors': False,
             'verbose': False,
             'progress_hooks': [lambda d: self._ydl_progress_hook(d, progress_hook_key)],
-            **self._get_cookie_opts(),
+            **self._get_cookie_opts(force_no_cookies=force_no_cookies),
         }
 
     def _download_video(self, request_id, video_id, resolution, title, codec=None):
@@ -792,11 +832,17 @@ class VideoDownloader:
             
             ydl_opts = self._get_ydl_options(output_template_path, resolution, progress_hook_key, codec)
             
-            self._update_status(request_id, 'processing', 'Starting download with yt-dlp...')
-            
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                self._update_status(request_id, 'processing', 'Downloading video...')
-                ydl.download([url])
+            try:
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    self._update_status(request_id, 'processing', 'Downloading video...')
+                    ydl.download([url])
+            except Exception as e_download:
+                print(f"DOWNLOAD: Initial download failed: {e_download}. Retrying without cookies...")
+                self._update_status(request_id, 'processing', 'Initial download failed. Retrying without cookies...')
+                nocookie_opts = self._get_ydl_options(output_template_path, resolution, progress_hook_key, codec, force_no_cookies=True)
+                with yt_dlp.YoutubeDL(nocookie_opts) as ydl:
+                    self._update_status(request_id, 'processing', 'Downloading video (no cookies fallback)...')
+                    ydl.download([url])
 
             final_filename_from_hook = self.final_filenames.pop(progress_hook_key, None)
 
@@ -883,8 +929,22 @@ class VideoDownloader:
                 },
                 **self._get_cookie_opts(),
             }
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=False)
+            try:
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(url, download=False)
+            except Exception as e_initial:
+                print(f"PLAYLIST_INFO: Initial playlist extraction failed: {e_initial}. Retrying without cookies...")
+                nocookie_opts = {
+                    'extract_flat': True, 
+                    'quiet': True,
+                    'no_warnings': True,
+                    'http_headers': {
+                        'User-Agent': self._get_random_user_agent(),
+                    },
+                    **self._get_cookie_opts(force_no_cookies=True)
+                }
+                with yt_dlp.YoutubeDL(nocookie_opts) as ydl:
+                    info = ydl.extract_info(url, download=False)
             
             entries = info.get('entries', [])
             total_duration = 0
@@ -970,8 +1030,19 @@ class VideoDownloader:
             
             self._update_status(request_id, 'processing', f'Downloading playlist "{title}"...')
             
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                ydl.download([url])
+            try:
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    ydl.download([url])
+            except Exception as e_download:
+                print(f"PLAYLIST_DOWNLOAD: Initial playlist download failed: {e_download}. Retrying without cookies...")
+                self._update_status(request_id, 'processing', f'Initial download failed. Retrying without cookies...')
+                nocookie_opts = {
+                    **ydl_opts,
+                    **self._get_cookie_opts(force_no_cookies=True)
+                }
+                nocookie_opts.pop('cookiefile', None)
+                with yt_dlp.YoutubeDL(nocookie_opts) as ydl:
+                    ydl.download([url])
                 
             self._update_status(request_id, 'complete', f'Playlist "{title}" downloaded successfully.')
             
