@@ -1475,7 +1475,7 @@ downloader = VideoDownloader()
 # Start polling in background thread
 polling_thread = threading.Thread(target=telegram_polling_loop, daemon=True)
 polling_thread.start()
- print("Telegram polling started - bot is now listening for messages!")
+print("Telegram polling started - bot is now listening for messages!")
 
 
 
@@ -1761,26 +1761,11 @@ def api_delete_file():
         return jsonify({'success': False, 'message': f'Server error: {str(e)}'}), 500
 
 # Telegram Bot Endpoints
+# استبدل دالة الـ webhook القديمة بهذا الكود
 @app.route('/api/telegram/webhook', methods=['POST'])
 def telegram_webhook():
-    """Receive updates from Telegram"""
-    try:
-        data = request.get_json()
-        if not data:
-            return jsonify({'success': False, 'message': 'No data received'}), 400
-        
-        message = data.get('message', {})
-        chat_id = message.get('chat', {}).get('id')
-        text = message.get('text', '')
-        
-        if text:
-            response_msg = f"Hello! I received: {text}"
-            telegram_bot.send_message(chat_id, response_msg)
-        
-        return jsonify({'success': True, 'message': 'Webhook processed'})
-    except Exception as e:
-        print(f"Webhook error: {e}")
-        return jsonify({'success': False, 'message': str(e)}), 500
+    """Disabled: Bot uses polling instead."""
+    return jsonify({'error': 'Webhook is disabled. The bot uses Long Polling.'}), 404
 
 @app.route('/api/telegram/send_file', methods=['POST'])
 def telegram_send_file():
