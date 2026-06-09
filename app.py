@@ -539,7 +539,7 @@ class VideoDownloader:
             print(f"VID_INFO: Parallel simulation failed: {e}")
             return None
 
-def get_video_info(self, video_id):
+    def get_video_info(self, video_id):
         try:
             url = f'https://www.youtube.com/watch?v={video_id}'
             
@@ -659,7 +659,7 @@ def get_video_info(self, video_id):
                 'message': f'Error occurred: {str(e_main)[:50]}...'
             }
 
-def start_audio_download(self, video_id, quality, title):
+    def start_audio_download(self, video_id, quality, title):
         request_id = str(uuid.uuid4())
         with download_lock:
             download_status[request_id] = {
@@ -683,7 +683,7 @@ def start_audio_download(self, video_id, quality, title):
         download_thread.start()
         return request_id
 
-def _download_audio(self, request_id, video_id, quality, title):
+    def _download_audio(self, request_id, video_id, quality, title):
         final_downloaded_file_path = None
         progress_hook_key = f"{request_id}_progress_{str(uuid.uuid4())[:8]}"
 
@@ -789,7 +789,7 @@ def _download_audio(self, request_id, video_id, quality, title):
         finally:
              with self._filenames_lock:
               self.final_filenames.pop(progress_hook_key, None)
-def start_download(self, video_id, resolution, title, codec=None):
+    def start_download(self, video_id, resolution, title, codec=None):
         request_id = str(uuid.uuid4())
         with download_lock:
             download_status[request_id] = {
@@ -814,7 +814,7 @@ def start_download(self, video_id, resolution, title, codec=None):
         download_thread.start()
         return request_id
 
-def _ydl_progress_hook(self, d, progress_hook_key):
+    def _ydl_progress_hook(self, d, progress_hook_key):
      if d['status'] == 'finished':
         with self._filenames_lock:
             self.final_filenames[progress_hook_key] = (
@@ -822,7 +822,7 @@ def _ydl_progress_hook(self, d, progress_hook_key):
             )
      elif d['status'] == 'error':
         print(f"yt-dlp reported an error for {progress_hook_key}: {d.get('error')}")
-def _get_ydl_options(self, output_template_path, resolution, progress_hook_key, codec=None, force_no_cookies=False):
+    def _get_ydl_options(self, output_template_path, resolution, progress_hook_key, codec=None, force_no_cookies=False):
         # codec: None/'h264' (default) or 'hevc' (h265). HEVC may not be available; fallbacks included
         if codec == 'hevc':
             # Prefer HEVC in MP4 if available, then fallback to any HEVC, then generic best
@@ -872,7 +872,7 @@ def _get_ydl_options(self, output_template_path, resolution, progress_hook_key, 
             **self._get_cookie_opts(force_no_cookies=force_no_cookies),
         }
 
-def _download_video(self, request_id, video_id, resolution, title, codec=None):
+    def _download_video(self, request_id, video_id, resolution, title, codec=None):
         final_downloaded_file_path = None
         progress_hook_key = f"{request_id}_progress_{str(uuid.uuid4())[:8]}"
 
@@ -957,7 +957,7 @@ def _download_video(self, request_id, video_id, resolution, title, codec=None):
         finally:
             with self._filenames_lock:
                 self.final_filenames.pop(progress_hook_key, None)
-def _update_status(self, request_id, status, message, download_url=None, file_size_mb=None):
+    def _update_status(self, request_id, status, message, download_url=None, file_size_mb=None):
         with download_lock:
             if request_id and request_id in download_status:
                 entry = download_status[request_id]
@@ -970,15 +970,15 @@ def _update_status(self, request_id, status, message, download_url=None, file_si
                     if 'resolution' in entry: entry['type'] = 'video'
                     elif 'quality' in entry: entry['type'] = 'audio'
 
-def get_status(self, request_id):
+    def get_status(self, request_id):
         with download_lock:
             return download_status.get(request_id)
 
-def get_all_status(self):
+    def get_all_status(self):
         with download_lock:
             return dict(download_status)
 
-def get_playlist_info(self, playlist_id):
+    def get_playlist_info(self, playlist_id):
         try:
             url = f'https://www.youtube.com/playlist?list={playlist_id}'
             ydl_opts = {
@@ -1034,7 +1034,7 @@ def get_playlist_info(self, playlist_id):
         except Exception as e:
              return {'success': False, 'message': str(e)}
 
-def start_playlist_download(self, playlist_id, resolution, title):
+    def start_playlist_download(self, playlist_id, resolution, title):
         request_id = str(uuid.uuid4())
         with download_lock:
             download_status[request_id] = {
@@ -1057,7 +1057,7 @@ def start_playlist_download(self, playlist_id, resolution, title):
         thread.start()
         return request_id
 
-def _download_playlist(self, request_id, playlist_id, resolution, title):
+    def _download_playlist(self, request_id, playlist_id, resolution, title):
         try:
             self._update_status(request_id, 'processing', 'Initializing playlist download...')
             
