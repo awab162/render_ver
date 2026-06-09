@@ -1470,11 +1470,11 @@ def telegram_polling_loop():
         except Exception as e:
             print(f"Telegram polling error: {e}")
             time.sleep(5)
-if __name__ == '__main__':          
- downloader = VideoDownloader()
+       
+downloader = VideoDownloader()
 # Start polling in background thread
- polling_thread = threading.Thread(target=telegram_polling_loop, daemon=True)
- polling_thread.start()
+polling_thread = threading.Thread(target=telegram_polling_loop, daemon=True)
+polling_thread.start()
  print("Telegram polling started - bot is now listening for messages!")
 
 
