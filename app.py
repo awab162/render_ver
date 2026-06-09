@@ -155,7 +155,7 @@ class VideoDownloader:
             # --- Core bypass: use player clients that datacenter IPs aren't blocked on ---
             'extractor_args': {
                 'youtube': {
-                    'player_client': ['mweb', 'android', 'tv_embedded', 'web'],
+                    'player_client': ['ios', 'mweb', 'tv_embedded', 'web'],
                 },
             },
             'geo_bypass': True,
