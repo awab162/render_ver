@@ -379,7 +379,7 @@ class VideoDownloader:
         
         return video_formats
 
-       def _aggressive_size_simulation(self, url, duration, info, force_no_cookies=False):
+    def _aggressive_size_simulation(self, url, duration, info, force_no_cookies=False):
         """Fast parallel simulation with dynamic timeouts based on duration"""
         try:
             # حساب أوقات الانتظار بناءً على طول الفيديو
