@@ -13,7 +13,10 @@ import yt_dlp
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 import requests
-
+import html 
+import concurrent.futures
+import importlib
+importlib.reload(yt_dlp)
 app = Flask(__name__)
 CORS(app, resources={
     r"/api/*": {
@@ -42,30 +45,38 @@ CONFIG = {
     'TELEGRAM_API_URL': 'https://api.telegram.org/bot',
     # Optional: raw Netscape-format cookie string to bypass bot detection
     'YOUTUBE_COOKIES_ENV': os.environ.get('YOUTUBE_COOKIES', ''),
+    # أضف هذا السطر داخل قاموس الـ CONFIG في أعلى الملف
+    'API_SECRET_KEY': os.environ.get('API_SECRET_KEY', 'default_fallback_super_secure_key_123'),
+    
 }
-
+TELEGRAM_BOT_TOKEN='7978447082:AAHEKq74KqWXmGoeCG6H_lneVMcZAvKHnfo'
+TELEGRAM_LIMIT_MB = 49
+def fmt_mb(sz):
+                                        try:
+                                            return f"{max(1, int(round(sz/1024/1024)))}MB"
+                                        except Exception:
+                                            return "~MB"
 if not CONFIG['TELEGRAM_BOT_TOKEN']:
     print("WARNING: TELEGRAM_BOT_TOKEN environment variable is not set! Bot will not work.")
 
 download_status = {}
 download_lock = threading.Lock()
 final_filenames_store = {}
-
-
 # ---------------------------------------------------------------------------
 # Auto-updater — mirrors the logic in update_yt_dlp.bat.
 # Runs once at startup in a background thread so it never blocks the server.
 # If yt-dlp is outdated (a common cause of download failures on YouTube),
 # it is automatically upgraded via pip.
 # ---------------------------------------------------------------------------
-def _auto_update_yt_dlp():
-    """Check if yt-dlp is up to date and upgrade it if necessary."""
+if __name__ == '__main__':
+ def _auto_update_yt_dlp():
+    """Check if yt-dlp is up to date and upgrade it if necessary with strict format normalization."""
     try:
-        # Get currently installed version
+        # 1. جلب الإصدار الحالي المثبت في السيرفر
         old_version = yt_dlp.version.__version__
         print(f"[yt-dlp updater] Current version: {old_version}")
 
-        # Ask PyPI for the latest released version
+        # 2. طلب الإصدار الأحدث من مستودعات PyPI
         try:
             resp = requests.get('https://pypi.org/pypi/yt-dlp/json', timeout=10)
             latest_version = resp.json()['info']['version']
@@ -73,26 +84,34 @@ def _auto_update_yt_dlp():
             print(f"[yt-dlp updater] Could not reach PyPI: {e}. Skipping update check.")
             return
 
-        if old_version == latest_version:
+        # 🎯 الحل الذكي: توحيد صيغة أرقام الإصدارات عبر إزالة الأصفار الزائدة والنقاط للمقارنة العادلة
+        # فمثلاً (2026.03.17) و (2026.3.17) سيتحولان معاً إلى الرقم (2026317)
+        clean_old = "".join([str(int(x)) for x in old_version.split('.') if x.isdigit()])
+        clean_latest = "".join([str(int(x)) for x in latest_version.split('.') if x.isdigit()])
+
+        # 3. المقارنة الدقيقة بعد تنظيف الأرقام
+        if clean_old == clean_latest:
             print(f"[yt-dlp updater] Already up to date ({old_version}). ✓")
             return
 
+        # 4. إذا كانت الأرقام مختلفة فعلياً، يبدأ التحديث هنا
         print(f"[yt-dlp updater] New version available: {latest_version}. Upgrading…")
         result = subprocess.run(
             [sys.executable, '-m', 'pip', 'install', '--upgrade', '--quiet', 'yt-dlp'],
             capture_output=True, text=True, timeout=120
         )
+        
         if result.returncode == 0:
-            # Reload the module so the running process uses the new version
-            import importlib
+            # إعادة تحميل المكتبة في الذاكرة لتطبيق التغييرات فوراً
+           
             importlib.reload(yt_dlp)
             new_version = yt_dlp.version.__version__
             print(f"[yt-dlp updater] ✅ Upgraded yt-dlp: {old_version} → {new_version}")
         else:
             print(f"[yt-dlp updater] ❌ pip upgrade failed:\n{result.stderr}")
+            
     except Exception as e:
         print(f"[yt-dlp updater] Unexpected error: {e}")
-
 
 def _auto_update_loop():
     """Run the updater once at startup, then every 24 h to keep yt-dlp fresh."""
@@ -102,17 +121,17 @@ def _auto_update_loop():
         _auto_update_yt_dlp()
         time.sleep(24 * 3600)  # re-check every 24 hours
 
-
-_updater_thread = threading.Thread(target=_auto_update_loop, daemon=True)
-_updater_thread.start()
-print("[yt-dlp updater] Background update checker started.")
+if __name__ == '__main__':
+ _updater_thread = threading.Thread(target=_auto_update_loop, daemon=True)
+ _updater_thread.start()
+ print("[yt-dlp updater] Background update checker started.")
 
 class VideoDownloader:
     def __init__(self):
         self.downloads_dir = Path(CONFIG['DOWNLOADS_DIR'])
         self.downloads_dir.mkdir(exist_ok=True)
         self.final_filenames = final_filenames_store
-        
+        self._filenames_lock = threading.Lock()
         cleanup_thread = threading.Thread(target=self._cleanup_loop, daemon=True)
         cleanup_thread.start()
 
@@ -229,32 +248,6 @@ class VideoDownloader:
         ]
         return random.choice(user_agents)
 
-    def _calculate_dynamic_timeouts(self, duration):
-        """Calculate dynamic timeouts based on video duration"""
-        base_timeout = 60  # 1 minute base
-        
-        # Scale timeout based on duration
-        if duration <= 300:  # 5 minutes or less
-            info_timeout = base_timeout
-            sim_timeout = 90
-        elif duration <= 900:  # 15 minutes or less
-            info_timeout = base_timeout * 1.5
-            sim_timeout = 120
-        elif duration <= 1800:  # 30 minutes or less
-            info_timeout = base_timeout * 2
-            sim_timeout = 180
-        elif duration <= 3600:  # 1 hour or less
-            info_timeout = base_timeout * 2.5
-            sim_timeout = 240
-        elif duration <= 7200:  # 2 hours or less
-            info_timeout = base_timeout * 3
-            sim_timeout = 300
-        else:  # Very long videos
-            info_timeout = base_timeout * 4
-            sim_timeout = 360  # 6 minutes for very long videos
-        
-        return int(info_timeout), int(sim_timeout)
-
     def _improved_estimation(self, resolution, duration):
         """Much more accurate estimation with better resolution differentiation"""
         # More realistic bitrates with better resolution differentiation
@@ -269,12 +262,12 @@ class VideoDownloader:
         
         # Duration-based minimal scaling
         duration_factor = 1.0
-        if duration > 1800:  # 30+ minutes
-            duration_factor = 0.98
-        elif duration > 3600:  # 1+ hour
-            duration_factor = 0.96
-        elif duration > 7200:  # 2+ hours
-            duration_factor = 0.94
+        if duration > 7200:       # most specific first
+          duration_factor = 0.94
+        elif duration > 3600:
+           duration_factor = 0.96
+        elif duration > 1800:
+           duration_factor = 0.98
         
         # More realistic compression efficiency
         compression_factor = 0.90
@@ -386,14 +379,13 @@ class VideoDownloader:
         
         return video_formats
 
-    def _aggressive_size_simulation(self, url, duration, info, force_no_cookies=False):
-        """Fast parallel simulation with reduced retries"""
+def _aggressive_size_simulation(self, url, duration, info, force_no_cookies=False):
+        """Fast parallel simulation with dynamic timeouts based on duration"""
         try:
-            # Drastically reduced timeouts for speed
-            info_timeout = 20
-            sim_timeout = 30
+            # حساب أوقات الانتظار بناءً على طول الفيديو
+            info_timeout, sim_timeout = self._calculate_dynamic_timeouts(duration)
             
-            print(f"VID_INFO: Using fast timeouts - Info: {info_timeout}s, Simulation: {sim_timeout}s (force_no_cookies={force_no_cookies})")
+            print(f"VID_INFO: Using dynamic timeouts - Info: {info_timeout}s, Simulation: {sim_timeout}s")
             
             video_formats_out = {}
             audio_formats_out = {}
@@ -410,10 +402,67 @@ class VideoDownloader:
                 },
                 'extract_flat': False,
                 'no_check_certificate': True,
-                'retries': 2, # Reduced from 10
+                'retries': 2,
                 **self._get_cookie_opts(force_no_cookies=force_no_cookies),
             }
 
+            def check_video_size(resolution):
+                try:
+                    format_spec = self._get_video_format_spec(resolution)
+                    current_sim_opts = {**base_sim_opts, 'format': format_spec}
+                    with yt_dlp.YoutubeDL(current_sim_opts) as sim_ydl:
+                        sim_info = sim_ydl.extract_info(url, download=False)
+                    total_filesize = self._calculate_total_filesize(sim_info)
+                    if total_filesize > 0:
+                        return resolution, {'filesize': int(total_filesize), 'estimated': False}
+                except Exception as e:
+                    print(f"check_video_size({resolution}): {e}")
+                return resolution, self._improved_estimation(resolution, duration)
+
+            def check_audio_size(quality_kbps):
+                try:
+                    format_spec = f'bestaudio[abr<={quality_kbps}][ext=m4a]/bestaudio[abr<={quality_kbps}]/bestaudio'
+                    current_sim_opts = {**base_sim_opts, 'format': format_spec}
+                    with yt_dlp.YoutubeDL(current_sim_opts) as sim_ydl:
+                        sim_info = sim_ydl.extract_info(url, download=False)
+                    filesize = sim_info.get('filesize') or sim_info.get('filesize_approx')
+                    if filesize and filesize > 0:
+                         return quality_kbps, {'filesize': int(filesize), 'estimated': False}
+                except Exception as e:
+                    print(f"check_video_size({resolution}): {e}")
+                return quality_kbps, self._improved_audio_estimation(quality_kbps, duration)
+
+           
+            with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+                video_futures = [executor.submit(check_video_size, res) for res in [720, 1080, 480, 360]]
+                audio_futures = [executor.submit(check_audio_size, q) for q in [128, 192, 256, 320]]
+                
+                for future in concurrent.futures.as_completed(video_futures + audio_futures):
+                    try:
+                        res_or_qual, result = future.result()
+                        if res_or_qual in [720, 1080, 480, 360]:
+                            video_formats_out[res_or_qual] = result
+                        else:
+                            audio_formats_out[res_or_qual] = result
+                    except Exception as e:
+                        print(f"VID_INFO: Parallel error: {e}")
+
+            video_formats_out = self._detect_and_handle_duplicate_sizes(video_formats_out)
+            print(f"VID_INFO: Fast parallel simulation completed")
+            
+            return {
+                'success': True,
+                'title': info.get('title', 'Unknown Title'),
+                'duration': duration,
+                'video_formats': video_formats_out,
+                'audio_formats': audio_formats_out,
+                'thumbnail': info.get('thumbnail'),
+                'estimated_only': False
+            }
+
+        except Exception as e:
+            print(f"VID_INFO: Parallel simulation failed: {e}")
+            return None
             def check_video_size(resolution):
                 try:
                     format_spec = self._get_video_format_spec(resolution)
@@ -446,7 +495,7 @@ class VideoDownloader:
                 return quality_kbps, self._improved_audio_estimation(quality_kbps, duration), None
 
             # Execute all checks in parallel
-            import concurrent.futures
+           
             with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
                 video_futures = [executor.submit(check_video_size, res) for res in [720, 1080, 480, 360]]
                 audio_futures = [executor.submit(check_audio_size, q) for q in [128, 192, 256, 320]]
@@ -490,7 +539,7 @@ class VideoDownloader:
             print(f"VID_INFO: Parallel simulation failed: {e}")
             return None
 
-    def get_video_info(self, video_id):
+def get_video_info(self, video_id):
         try:
             url = f'https://www.youtube.com/watch?v={video_id}'
             
@@ -610,7 +659,7 @@ class VideoDownloader:
                 'message': f'Error occurred: {str(e_main)[:50]}...'
             }
 
-    def start_audio_download(self, video_id, quality, title):
+def start_audio_download(self, video_id, quality, title):
         request_id = str(uuid.uuid4())
         with download_lock:
             download_status[request_id] = {
@@ -634,7 +683,7 @@ class VideoDownloader:
         download_thread.start()
         return request_id
 
-    def _download_audio(self, request_id, video_id, quality, title):
+def _download_audio(self, request_id, video_id, quality, title):
         final_downloaded_file_path = None
         progress_hook_key = f"{request_id}_progress_{str(uuid.uuid4())[:8]}"
 
@@ -680,22 +729,25 @@ class VideoDownloader:
             
             try:
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    self._update_status(request_id, 'processing', 'Extracting audio...')
+                    self._update_status(request_id, 'processing', 'Downloading video...')
                     ydl.download([url])
             except Exception as e_download:
-                print(f"AUDIO_DOWNLOAD: Initial audio download failed: {e_download}. Retrying without cookies...")
-                self._update_status(request_id, 'processing', 'Initial audio download failed. Retrying without cookies...')
+                print(f"VIDEO_DOWNLOAD: Initial download failed: {e_download}. Retrying without cookies...")
+                self._update_status(request_id, 'processing', 'Initial download failed. Retrying without cookies...')
                 nocookie_opts = {
                     **ydl_opts,
                     **self._get_cookie_opts(force_no_cookies=True)
                 }
                 nocookie_opts.pop('cookiefile', None)
                 with yt_dlp.YoutubeDL(nocookie_opts) as ydl:
-                    self._update_status(request_id, 'processing', 'Extracting audio (no cookies fallback)...')
+                    self._update_status(request_id, 'processing', 'Downloading video (no cookies fallback)...')
                     ydl.download([url])
 
-            final_filename_from_hook = self.final_filenames.pop(progress_hook_key, None)
+            # 🔒 حماية قراءة وحذف الاسم باستخدام القفل (توضع خارج الـ try وبنفس مستوى محاذاتها)
+            with self._filenames_lock:
+                final_filename_from_hook = self.final_filenames.pop(progress_hook_key, None)
 
+            # ⚙️ التحقق من الملف المجلوب من الـ Hook بمسافات موحدة تمنع الـ IndentationError
             if final_filename_from_hook and Path(final_filename_from_hook).exists():
                 final_downloaded_file_path = Path(final_filename_from_hook)
             else:
@@ -707,6 +759,10 @@ class VideoDownloader:
                     glob_pattern = f"{safe_title}_{video_id}_{quality}kbps.*"
                     found_files = list(self.downloads_dir.glob(glob_pattern))
                     if found_files:
+                       # 🎯 ترتيب الملفات من الأحدث إلى الأقدم بناءً على وقت التعديل
+                        found_files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    
+                       # الآن السنتر [0] يضمن لك الحصول على أحدث ملف تم تحميله تِلقائياً
                         final_downloaded_file_path = found_files[0] 
             
             if not final_downloaded_file_path or not final_downloaded_file_path.exists():
@@ -731,9 +787,9 @@ class VideoDownloader:
             specific_msg = f"Audio download failed: {error_msg}"
             self._update_status(request_id, 'failed', specific_msg)
         finally:
-            self.final_filenames.pop(progress_hook_key, None)
-
-    def start_download(self, video_id, resolution, title, codec=None):
+             with self._filenames_lock:
+              self.final_filenames.pop(progress_hook_key, None)
+def start_download(self, video_id, resolution, title, codec=None):
         request_id = str(uuid.uuid4())
         with download_lock:
             download_status[request_id] = {
@@ -758,13 +814,15 @@ class VideoDownloader:
         download_thread.start()
         return request_id
 
-    def _ydl_progress_hook(self, d, progress_hook_key):
-        if d['status'] == 'finished':
-            self.final_filenames[progress_hook_key] = d.get('filename') or d.get('info_dict', {}).get('_filename')
-        elif d['status'] == 'error':
-            print(f"yt-dlp reported an error for {progress_hook_key}: {d.get('error')}")
-
-    def _get_ydl_options(self, output_template_path, resolution, progress_hook_key, codec=None, force_no_cookies=False):
+def _ydl_progress_hook(self, d, progress_hook_key):
+     if d['status'] == 'finished':
+        with self._filenames_lock:
+            self.final_filenames[progress_hook_key] = (
+                d.get('filename') or d.get('info_dict', {}).get('_filename')
+            )
+     elif d['status'] == 'error':
+        print(f"yt-dlp reported an error for {progress_hook_key}: {d.get('error')}")
+def _get_ydl_options(self, output_template_path, resolution, progress_hook_key, codec=None, force_no_cookies=False):
         # codec: None/'h264' (default) or 'hevc' (h265). HEVC may not be available; fallbacks included
         if codec == 'hevc':
             # Prefer HEVC in MP4 if available, then fallback to any HEVC, then generic best
@@ -814,7 +872,7 @@ class VideoDownloader:
             **self._get_cookie_opts(force_no_cookies=force_no_cookies),
         }
 
-    def _download_video(self, request_id, video_id, resolution, title, codec=None):
+def _download_video(self, request_id, video_id, resolution, title, codec=None):
         final_downloaded_file_path = None
         progress_hook_key = f"{request_id}_progress_{str(uuid.uuid4())[:8]}"
 
@@ -844,8 +902,8 @@ class VideoDownloader:
                     self._update_status(request_id, 'processing', 'Downloading video (no cookies fallback)...')
                     ydl.download([url])
 
-            final_filename_from_hook = self.final_filenames.pop(progress_hook_key, None)
-
+            with self._filenames_lock:
+              final_filename_from_hook = self.final_filenames.pop(progress_hook_key, None)
             if final_filename_from_hook and Path(final_filename_from_hook).exists():
                 final_downloaded_file_path = Path(final_filename_from_hook)
             else:
@@ -857,8 +915,11 @@ class VideoDownloader:
                     glob_pattern = f"{safe_title}_{video_id}_{resolution}p{codec_suffix}.*"
                     found_files = list(self.downloads_dir.glob(glob_pattern))
                     if found_files:
-                        final_downloaded_file_path = found_files[0] 
-            
+# 🎯 التعديل الآمن: ترتيب الملفات المطابقة من الأحدث إلى الأقدم بناءً على وقت التعديل
+                        found_files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+                        
+                        # الآن العنصر رقم 0 هو بالتأكيد أحدث ملف تم إنشاؤه
+                        final_downloaded_file_path = found_files[0]            
             if not final_downloaded_file_path or not final_downloaded_file_path.exists():
                 raise Exception("Downloaded file not found after yt-dlp execution.")
 
@@ -894,9 +955,9 @@ class VideoDownloader:
             elif "Downloaded file not found" in error_msg: specific_msg = "Could not locate the video file after download process."
             self._update_status(request_id, 'failed', specific_msg)
         finally:
-            self.final_filenames.pop(progress_hook_key, None)
-
-    def _update_status(self, request_id, status, message, download_url=None, file_size_mb=None):
+            with self._filenames_lock:
+                self.final_filenames.pop(progress_hook_key, None)
+def _update_status(self, request_id, status, message, download_url=None, file_size_mb=None):
         with download_lock:
             if request_id and request_id in download_status:
                 entry = download_status[request_id]
@@ -909,15 +970,15 @@ class VideoDownloader:
                     if 'resolution' in entry: entry['type'] = 'video'
                     elif 'quality' in entry: entry['type'] = 'audio'
 
-    def get_status(self, request_id):
+def get_status(self, request_id):
         with download_lock:
             return download_status.get(request_id)
 
-    def get_all_status(self):
+def get_all_status(self):
         with download_lock:
             return dict(download_status)
 
-    def get_playlist_info(self, playlist_id):
+def get_playlist_info(self, playlist_id):
         try:
             url = f'https://www.youtube.com/playlist?list={playlist_id}'
             ydl_opts = {
@@ -973,7 +1034,7 @@ class VideoDownloader:
         except Exception as e:
              return {'success': False, 'message': str(e)}
 
-    def start_playlist_download(self, playlist_id, resolution, title):
+def start_playlist_download(self, playlist_id, resolution, title):
         request_id = str(uuid.uuid4())
         with download_lock:
             download_status[request_id] = {
@@ -996,7 +1057,7 @@ class VideoDownloader:
         thread.start()
         return request_id
 
-    def _download_playlist(self, request_id, playlist_id, resolution, title):
+def _download_playlist(self, request_id, playlist_id, resolution, title):
         try:
             self._update_status(request_id, 'processing', 'Initializing playlist download...')
             
@@ -1007,6 +1068,8 @@ class VideoDownloader:
             url = f'https://www.youtube.com/playlist?list={playlist_id}'
             
             # Calculate format spec (reusing logic but simplified)
+            # 🔢 تحويل الجودة إلى رقم صحيح لحل مشكلة الـ Type mismatch ومنع تخطي الشروط
+            resolution_int = int(resolution) if isinstance(resolution, str) and resolution.isdigit() else int(resolution)
             if resolution == 480:
                 format_spec = f'bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=480]+bestaudio/best[height<=480]/bestvideo+bestaudio/best'
             elif resolution == 360:
@@ -1100,7 +1163,7 @@ class TelegramBot:
                 data['text'] = text
             if show_alert:
                 data['show_alert'] = True
-            response = requests.post(url, data=data, timeout=10)
+            response = requests.post(url, json=data, timeout=10)
             response.raise_for_status()
             return {'success': True}
         except Exception as e:
@@ -1108,28 +1171,28 @@ class TelegramBot:
             return {'success': False, 'error': str(e)}
     
     def send_video(self, chat_id, video_path, caption=None):
-        """Send a video file to a Telegram chat"""
-        try:
-            if not Path(video_path).exists():
-                return {'success': False, 'error': 'File not found'}
+        """Send a video file to a Telegram chat with built-in retries"""
+        if not Path(video_path).exists():
+            return {'success': False, 'error': 'File not found'}
             
-            url = f"{self.base_url}/sendVideo"
-            with open(video_path, 'rb') as video_file:
-                files = {'video': video_file}
-                data = {
-                    'chat_id': chat_id,
-                    'supports_streaming': True
-                }
-                if caption:
-                    data['caption'] = caption
-                
-                response = requests.post(url, files=files, data=data, timeout=300)
-                response.raise_for_status()
-                return {'success': True, 'response': response.json()}
-        except Exception as e:
-            print(f"Telegram send video error: {e}")
-            return {'success': False, 'error': str(e)}
-    
+        url = f"{self.base_url}/sendVideo"
+        max_retries = 3
+        
+        for attempt in range(max_retries):
+            try:
+                with open(video_path, 'rb') as video_file:
+                    files = {'video': video_file}
+                    data = {'chat_id': chat_id, 'supports_streaming': True}
+                    if caption: data['caption'] = caption
+                    
+                    response = requests.post(url, files=files, data=data, timeout=300)
+                    response.raise_for_status()
+                    return {'success': True, 'response': response.json()}
+            except Exception as e:
+                print(f"Attempt {attempt+1} failed to send video: {e}")
+                if attempt == max_retries - 1:
+                    return {'success': False, 'error': str(e)}
+                time.sleep(2) # انتظار ثانيتين قبل المحاولة التالية   
     def send_audio(self, chat_id, audio_path, caption=None, title=None, performer=None):
         """Send an audio file to a Telegram chat"""
         try:
@@ -1232,8 +1295,8 @@ def telegram_polling_loop():
                                     telegram_bot.answer_callback_query(cq_id, text='Download started')
                                     telegram_bot.send_message(chat_id, (
                                         f"🎬 Starting MP4 {res}p ({codec_label}) for {vid}\n"
-                                        f"Status: http://localhost:8000/api/download_status/{request_id}"
-                                    ))
+                                        f"Status: {CONFIG['LOCAL_SERVER_URL']}/api/download_status/{request_id}"                          
+                                        ))
                                     threading.Thread(target=_notify_when_done, args=(request_id, chat_id), daemon=True).start()
                                 elif data_str.startswith('a:'):
                                     # a:QUALITY:VIDEOID
@@ -1248,8 +1311,8 @@ def telegram_polling_loop():
                                     telegram_bot.answer_callback_query(cq_id, text='Audio download started')
                                     telegram_bot.send_message(chat_id, (
                                         f"🎵 Starting MP3 {quality}kbps for {vid}\n"
-                                        f"Status: http://localhost:8000/api/download_status/{request_id}"
-                                    ))
+                                        f"Status: {CONFIG['LOCAL_SERVER_URL']}/api/download_status/{request_id}"   
+                                        ))
                                     threading.Thread(target=_notify_when_done, args=(request_id, chat_id), daemon=True).start()
                                 else:
                                     telegram_bot.answer_callback_query(cq_id)
@@ -1323,11 +1386,7 @@ def telegram_polling_loop():
 
                                     # Prepare sizes for video resolutions
                                     res_list = [1080, 720, 480, 360, 240, 144]
-                                    def fmt_mb(sz):
-                                        try:
-                                            return f"{max(1, int(round(sz/1024/1024)))}MB"
-                                        except Exception:
-                                            return "~MB"
+                                    
                                     video_sizes = {}
                                     for r in res_list:
                                         if r in vf and 'filesize' in vf[r]:
@@ -1383,10 +1442,14 @@ def telegram_polling_loop():
                                         { 'text': f"MP3 128 {audio_sizes[128]}", 'callback_data': f"a:128:{video_id}" }
                                     ])
 
+# 1. نقوم بتنظيف العنوان أولاً وصنع الـ safe_title
+                                    safe_title = html.escape(title)
+
+# 2. الآن نضع الـ safe_title النظيف داخل الرسالة بدلاً من title القديم
                                     text_msg = (
-                                        f"🎬 Choose format for: <b>{title}</b>\n\n"
+                                        f"🎬 Choose format for: <b>{safe_title}</b>\n\n"
                                         f"Video (MP4 H.264 or HEVC) and Audio (MP3). Sizes are estimates."
-                                    )
+)
                                     telegram_bot.send_message_with_keyboard(chat_id, text_msg, kb, parse_mode='HTML')
                                     print(f"Presented selection keyboard for {video_id} to chat {chat_id}")
                                 else:
@@ -1407,13 +1470,14 @@ def telegram_polling_loop():
         except Exception as e:
             print(f"Telegram polling error: {e}")
             time.sleep(5)
-
+if __name__ == '__main__':          
+ downloader = VideoDownloader()
 # Start polling in background thread
-polling_thread = threading.Thread(target=telegram_polling_loop, daemon=True)
-polling_thread.start()
-print("Telegram polling started - bot is now listening for messages!")
+ polling_thread = threading.Thread(target=telegram_polling_loop, daemon=True)
+ polling_thread.start()
+ print("Telegram polling started - bot is now listening for messages!")
 
-downloader = VideoDownloader()
+
 
 # ---------------------------------------------------------------------------
 # Helper: wait for a download to finish, send the file to Telegram, then
@@ -1464,45 +1528,55 @@ def _notify_when_done(request_id, chat_id):
                     )
                     return
 
-                # Notify user we're uploading
+               # Notify user we're uploading
                 telegram_bot.send_message(
                     chat_id,
                     f"📤 Uploading <b>{filename}</b>{size_str} to Telegram…",
-                 )
+                )
 
-                # Send the file (video or audio)
                 dl_type = status.get('type', 'video')
                 caption = f"✅ {filename}{size_str}"
+                
+                # 🎯 إعدادات المحاولات المتعددة
+                MAX_RETRIES = 3
+                success = False
 
-                if dl_type == 'audio' or filename.endswith('.mp3'):
-                    result = telegram_bot.send_audio(
-                        chat_id, str(file_path),
-                        caption=caption,
-                        title=status.get('title', filename),
-                    )
-                else:
-                    result = telegram_bot.send_video(
-                        chat_id, str(file_path),
-                        caption=caption,
-                    )
+                for attempt in range(1, MAX_RETRIES + 1):
+                    if dl_type == 'audio' or filename.endswith('.mp3'):
+                        result = telegram_bot.send_audio(
+                            chat_id, str(file_path),
+                            caption=caption,
+                            title=status.get('title', filename),
+                        )
+                    else:
+                        result = telegram_bot.send_video(
+                            chat_id, str(file_path),
+                            caption=caption,
+                        )
 
-                if result.get('success'):
-                    print(f"[Telegram] Sent {filename} to chat {chat_id}")
-                else:
-                    telegram_bot.send_message(
-                        chat_id,
-                        f"⚠️ Could not upload file: {result.get('error')}"
-                    )
+                    if result.get('success'):
+                        print(f"[Telegram] Sent {filename} to chat {chat_id} (Attempt {attempt})")
+                        success = True
+                        break  # نجحنا، نخرج من حلقة المحاولات
+                    else:
+                        print(f"❌ Upload attempt {attempt} failed: {result.get('error')}")
+                        if attempt < MAX_RETRIES:
+                            time.sleep(2) # انتظار بسيط قبل المحاولة التالية
+                        else:
+                            telegram_bot.send_message(
+                                chat_id,
+                                f"⚠️ Could not upload file after {MAX_RETRIES} attempts: {result.get('error')}"
+                            )
 
-                # Delete the file from disk to free space (ephemeral FS strategy)
+                # 🎯 التنظيف الذاتي: حذف الملف بعد النجاح أو بعد استنفاد كل المحاولات
                 try:
-                    file_path.unlink(missing_ok=True)
-                    print(f"[Cleaner] Deleted {filename} after Telegram upload.")
+                    if file_path.exists():
+                        file_path.unlink()
+                        print(f"[Cleaner] Deleted {filename} from disk.")
                 except Exception as del_err:
                     print(f"[Cleaner] Could not delete {filename}: {del_err}")
 
                 return
-
             time.sleep(3)
 
         telegram_bot.send_message(
@@ -1551,7 +1625,7 @@ def api_download_playlist():
             return jsonify({'success': False, 'message': 'No JSON data provided'}), 400
         
         playlist_id = data.get('playlistId')
-        resolution = data.get('resolution', '720')
+        resolution = int(data.get('resolution', '720'))
         title = data.get('title', 'Unknown Playlist')
         
         if not playlist_id:
@@ -1574,7 +1648,8 @@ def api_download_video():
             return jsonify({'success': False, 'message': 'No JSON data provided'}), 400
         
         video_id = data.get('videoId')
-        resolution = data.get('resolution', '720')
+        playlist_id = data.get('playlist_id')
+        resolution = int(data.get('resolution', '720'))
         codec = data.get('codec')  # optional: 'h264' | 'hevc'
         title = data.get('title', 'Unknown Video')
         
@@ -1586,7 +1661,8 @@ def api_download_video():
             return jsonify({'success': False, 'message': 'Invalid resolution'}), 400
         if codec and codec not in ['h264', 'hevc']:
             return jsonify({'success': False, 'message': 'Invalid codec'}), 400
-        
+        if not playlist_id or not re.match(r'^([a-zA-Z0-9_-]{10,})$', playlist_id):
+            return jsonify({'error': 'Invalid Playlist ID format'}), 400
         request_id = downloader.start_download(video_id, resolution, title, codec=codec)
         return jsonify({
             'success': True,
@@ -1831,6 +1907,11 @@ def root_info():
 def sync_cookies():
     """Receive cookies in Netscape format from Chrome Extension and save to cookies.txt"""
     try:
+        # 🔒 التحقق من الرمز السري المشترك لحماية الـ Endpoint
+        api_key = request.headers.get('X-API-Key')
+        if not api_key or api_key != CONFIG['API_SECRET_KEY']:
+            return jsonify({'success': False, 'message': 'Unauthorized: Invalid or missing API Key'}), 401
+
         data = request.get_json()
         if not data or 'cookies' not in data:
             return jsonify({'success': False, 'message': 'No cookies provided'}), 400
@@ -1846,7 +1927,6 @@ def sync_cookies():
             'message': f'Cookies successfully saved to {cookies_file.name}'
         })
     except Exception as e:
-        return jsonify({'success': False, 'message': f'Failed to sync cookies: {str(e)}'}), 500
-
+        return jsonify({'success': False, 'message': str(e)}), 500
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8000, debug=False, threaded=True)
