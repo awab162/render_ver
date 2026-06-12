@@ -47,10 +47,32 @@ CONFIG = {
     'YOUTUBE_COOKIES_ENV': os.environ.get('YOUTUBE_COOKIES', ''),
     # أضف هذا السطر داخل قاموس الـ CONFIG في أعلى الملف
     'API_SECRET_KEY': os.environ.get('API_SECRET_KEY', 'default_fallback_super_secure_key_123'),
+
     
 }
 TELEGRAM_BOT_TOKEN='7978447082:AAHEKq74KqWXmGoeCG6H_lneVMcZAvKHnfo'
 TELEGRAM_LIMIT_MB = 49
+@app.route('/debug/cookies')
+def debug_cookies():
+    import yt_dlp
+    cookies_env = CONFIG.get('YOUTUBE_COOKIES_ENV', '')
+    tmp_path = Path(__file__).parent / 'cookies_env.txt'
+
+    result = {
+        'env_var_length': len(cookies_env),
+        'env_var_present': bool(cookies_env),
+        'file_exists': tmp_path.exists(),
+        'file_size': tmp_path.stat().st_size if tmp_path.exists() else 0,
+        'file_first_line': '',
+        'yt_dlp_version': yt_dlp.version.__version__,
+        'write_dir_writable': os.access(str(Path(__file__).parent), os.W_OK),
+    }
+
+    if tmp_path.exists():
+        with open(tmp_path) as f:
+            result['file_first_line'] = f.readline().strip()
+
+    return jsonify(result)
 def fmt_mb(sz):
                                         try:
                                             return f"{max(1, int(round(sz/1024/1024)))}MB"
@@ -136,15 +158,6 @@ class VideoDownloader:
         cleanup_thread.start()
 
     def _get_cookie_opts(self, force_no_cookies=False):
-        """Return yt-dlp options to bypass YouTube bot detection automatically.
-
-        Strategy (layered — all applied together):
-        1. Alternative player clients — mweb / android / tv_embedded rarely
-           get blocked on datacenter IPs, unlike the default 'web' client.
-        2. Geo-bypass — tells yt-dlp to bypass geo-restrictions.
-        3. Cookies (if available) — from YOUTUBE_COOKIES env var or local file.
-           Cookies are optional — most videos work without them.
-        """
         if force_no_cookies:
             return {
                 'geo_bypass': True,
@@ -152,7 +165,6 @@ class VideoDownloader:
             }
 
         opts = {
-            # --- Core bypass: use player clients that datacenter IPs aren't blocked on ---
             'extractor_args': {
                 'youtube': {
                     'player_client': ['ios', 'mweb', 'tv_embedded', 'web'],
@@ -162,33 +174,41 @@ class VideoDownloader:
             'no_check_certificate': True,
         }
 
-        # --- Optional: PO (Proof of Origin) token from env var ---
         po_token = os.environ.get('YT_PO_TOKEN', '')
         if po_token:
             opts['extractor_args']['youtube']['po_token'] = [po_token]
             print("BYPASS: Using PO token from YT_PO_TOKEN env var.")
 
-        # --- Cookies: REQUIRED on datacenter IPs (Render, Railway, etc.) ---
         cookies_env = CONFIG.get('YOUTUBE_COOKIES_ENV', '')
         if cookies_env and len(cookies_env.strip()) > 10:
-            tmp_cookies = Path(__file__).parent / 'cookies_env.txt'
+            # Use /tmp — always writable on Render
+            tmp_cookies = Path('/tmp/yt_cookies.txt')
             try:
-                # Try base64 decoding first (recommended)
                 try:
                     decoded = base64.b64decode(cookies_env.strip()).decode('utf-8')
                     if '# Netscape' in decoded or '.youtube.com' in decoded:
                         tmp_cookies.write_text(decoded, encoding='utf-8')
-                        print("BYPASS: Decoded base64 cookies from YOUTUBE_COOKIES env var.")
+                        print(f"BYPASS: Wrote {len(decoded)} chars of decoded cookies to {tmp_cookies}")
                     else:
-                        raise ValueError("Not valid cookie content after decode")
-                except Exception:
-                    tmp_cookies.write_text(cookies_env, encoding='utf-8')
-                    print("BYPASS: Using raw cookies from YOUTUBE_COOKIES env var.")
+                        raise ValueError("Decoded content missing Netscape header or .youtube.com")
+                except Exception as decode_err:
+                    print(f"BYPASS: base64 decode failed ({decode_err}), trying raw write")
+                    tmp_cookies.write_text(cookies_env.strip(), encoding='utf-8')
+                    print(f"BYPASS: Wrote raw cookies to {tmp_cookies}")
+
+                # Verify the write actually worked
+                actual_size = tmp_cookies.stat().st_size
+                print(f"BYPASS: cookies file confirmed on disk — {actual_size} bytes")
+
+                if actual_size < 100:
+                    raise ValueError(f"Cookie file too small ({actual_size} bytes) — likely corrupted")
 
                 opts['cookiefile'] = str(tmp_cookies)
                 return opts
+
             except Exception as e:
-                print(f"BYPASS: Could not write env cookies to file: {e}")
+                print(f"BYPASS: CRITICAL — cookie write failed: {e}")
+                raise RuntimeError(f"Cookie setup failed: {e}")
 
         cookies_file = Path(__file__).parent / 'cookies.txt'
         if cookies_file.exists() and cookies_file.stat().st_size > 10:
@@ -199,7 +219,7 @@ class VideoDownloader:
         print("BYPASS: WARNING — No cookies found! Downloads WILL fail on datacenter IPs.")
         print("BYPASS: Set YOUTUBE_COOKIES env var (base64-encoded cookies.txt content).")
         return opts
-
+        
     def _cleanup_loop(self):
         while True:
             try:
