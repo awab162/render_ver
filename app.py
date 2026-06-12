@@ -16,6 +16,7 @@ import requests
 import html 
 import concurrent.futures
 import importlib
+import psiphon_manager
 importlib.reload(yt_dlp)
 app = Flask(__name__)
 CORS(app, resources={
@@ -47,7 +48,7 @@ CONFIG = {
     'YOUTUBE_COOKIES_ENV': os.environ.get('YOUTUBE_COOKIES', ''),
     # أضف هذا السطر داخل قاموس الـ CONFIG في أعلى الملف
     'API_SECRET_KEY': os.environ.get('API_SECRET_KEY', 'default_fallback_super_secure_key_123'),
-
+    'YT_PROXY': os.environ.get('YT_PROXY', ''),
     
 }
 TELEGRAM_BOT_TOKEN='7978447082:AAHEKq74KqWXmGoeCG6H_lneVMcZAvKHnfo'
@@ -148,6 +149,35 @@ if __name__ == '__main__':
  _updater_thread.start()
  print("[yt-dlp updater] Background update checker started.")
 
+
+
+# --- تشغيل Psiphon عند الـ startup ---
+_psiphon_proxy = None
+
+def _init_psiphon():
+    global _psiphon_proxy
+    # فقط إذا YT_PROXY فارغ — لا تتعارض مع proxy يدوي
+    if not CONFIG.get('YT_PROXY', '').strip():
+        print("PSIPHON: لا يوجد YT_PROXY يدوي — يحاول تشغيل Psiphon...")
+        _psiphon_proxy = psiphon_manager.start()
+        if _psiphon_proxy:
+            CONFIG['YT_PROXY'] = _psiphon_proxy
+            print(f"PSIPHON: ✅ YT_PROXY ضُبط تلقائياً → {_psiphon_proxy}")
+        else:
+            print("PSIPHON: ⚠️ فشل — سيكمل بدون proxy")
+    else:
+        print(f"PSIPHON: يوجد YT_PROXY يدوي — تجاهل Psiphon.")
+
+# شغّل في thread منفصل حتى لا يبطئ startup
+import threading
+threading.Thread(target=_init_psiphon, daemon=True).start()
+@app.route('/debug/psiphon')
+def debug_psiphon():
+    return jsonify({
+        'psiphon_running':    psiphon_manager.is_running(),
+        'proxy_url':          CONFIG.get('YT_PROXY', None),
+        'yt_proxy_active':    bool(CONFIG.get('YT_PROXY', '')),
+    })
 class VideoDownloader:
     def __init__(self):
         self.downloads_dir = Path(CONFIG['DOWNLOADS_DIR'])
