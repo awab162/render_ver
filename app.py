@@ -55,6 +55,17 @@ CONFIG = {
 }
 TELEGRAM_BOT_TOKEN='7978447082:AAHEKq74KqWXmGoeCG6H_lneVMcZAvKHnfo'
 TELEGRAM_LIMIT_MB = 49
+import threading
+
+def prewarm_token():
+    logger.info("🚀 [STARTUP] Pre-warming PO-Token...")
+    # استدعاء الدالة التي تحدث الكاش
+    po_generator.get_cached_token(force_refresh=True)
+    logger.info("✅ [STARTUP] PO-Token pre-warmed successfully.")
+
+# تشغيل المهمة في خيط منفصل (Background Thread) لعدم تعليق السيرفر
+threading.Thread(target=prewarm_token, daemon=True).start()
+
 @app.route('/debug/cookies')
 def debug_cookies():
     import yt_dlp
