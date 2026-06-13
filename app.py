@@ -18,6 +18,7 @@ import concurrent.futures
 import importlib
 import psiphon_manager
 import po_generator
+from contextlib import contextmanager
 importlib.reload(yt_dlp)
 app = Flask(__name__)
 CORS(app, resources={
@@ -1196,6 +1197,42 @@ class TelegramBot:
         self.bot_token = bot_token
         self.base_url = f"https://api.telegram.org/bot{bot_token}"
     
+    def send_chat_action(self, chat_id, action='typing'):
+        """Send chat action (e.g., typing, upload_video, upload_audio)"""
+        try:
+            url = f"{self.base_url}/sendChatAction"
+            data = {
+                'chat_id': chat_id,
+                'action': action
+            }
+            response = requests.post(url, json=data, timeout=10)
+            response.raise_for_status()
+            return {'success': True}
+        except Exception as e:
+            print(f"Telegram sendChatAction error: {e}")
+            return {'success': False, 'error': str(e)}
+
+@contextmanager
+def telegram_chat_action(bot, chat_id, action='typing', interval=4.5):
+    """
+    Context manager to periodically send a chat action in a background thread.
+    It stops automatically when the context exits.
+    """
+    stop_event = threading.Event()
+    
+    def loop_action():
+        while not stop_event.is_set():
+            bot.send_chat_action(chat_id, action)
+            stop_event.wait(interval)
+            
+    thread = threading.Thread(target=loop_action, daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        stop_event.set()
+        thread.join(timeout=1.0)
+    
     def send_message(self, chat_id, text, parse_mode='HTML'):
         """Send a text message to a Telegram chat"""
         try:
@@ -1365,8 +1402,9 @@ def telegram_polling_loop():
                                     res = res_str
                                     # Fetch title
                                     try:
-                                        info = downloader.get_video_info(vid)
-                                        title = info.get('title') or f"Video_{vid}"
+                                        with telegram_chat_action(telegram_bot, chat_id, 'typing'):
+                                            info = downloader.get_video_info(vid)
+                                            title = info.get('title') or f"Video_{vid}"
                                     except Exception:
                                         title = f"Video_{vid}"
                                     request_id = downloader.start_download(vid, res, title, codec=codec)
@@ -1382,8 +1420,9 @@ def telegram_polling_loop():
                                     _, q_str, vid = data_str.split(':', 2)
                                     quality = q_str
                                     try:
-                                        info = downloader.get_video_info(vid)
-                                        title = info.get('title') or f"Video_{vid}"
+                                        with telegram_chat_action(telegram_bot, chat_id, 'typing'):
+                                            info = downloader.get_video_info(vid)
+                                            title = info.get('title') or f"Video_{vid}"
                                     except Exception:
                                         title = f"Video_{vid}"
                                     request_id = downloader.start_audio_download(vid, quality, title)
@@ -1452,11 +1491,12 @@ def telegram_polling_loop():
                                     video_id = video_id_match.group(1)
                                     # Fetch info to compute sizes and title
                                     try:
-                                        info = downloader.get_video_info(video_id)
-                                        title = info.get('title') or f"Video_{video_id}"
-                                        duration = info.get('duration', 0) or 0
-                                        vf = info.get('video_formats', {}) or {}
-                                        af = info.get('audio_formats', {}) or {}
+                                        with telegram_chat_action(telegram_bot, chat_id, 'typing'):
+                                            info = downloader.get_video_info(video_id)
+                                            title = info.get('title') or f"Video_{video_id}"
+                                            duration = info.get('duration', 0) or 0
+                                            vf = info.get('video_formats', {}) or {}
+                                            af = info.get('audio_formats', {}) or {}
                                     except Exception:
                                         info = None
                                         title = f"Video_{video_id}"
@@ -1564,6 +1604,15 @@ print("Telegram polling started - bot is now listening for messages!")
 # files are gone after a restart anyway, so we ship them immediately.
 # ---------------------------------------------------------------------------
 def _notify_when_done(request_id, chat_id):
+    """Wrapper that manages the telegram chat action for the actual notify implementation."""
+    status = downloader.get_status(request_id)
+    dl_type = status.get('type', 'video') if status else 'video'
+    chat_action = 'upload_video' if dl_type == 'video' else ('upload_audio' if dl_type == 'audio' else 'typing')
+
+    with telegram_chat_action(telegram_bot, chat_id, chat_action):
+        _notify_when_done_impl(request_id, chat_id)
+
+def _notify_when_done_impl(request_id, chat_id):
     """Wait for download to complete, send file to Telegram, delete from disk."""
     try:
         start_time = time.time()
