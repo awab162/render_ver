@@ -85,7 +85,7 @@ def _generate_new_token():
             env=env,
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=60,
             shell=use_shell
         )
         
