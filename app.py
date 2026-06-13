@@ -2042,4 +2042,6 @@ def sync_cookies():
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=8000, debug=False, threaded=True)
+    # Render assigns a dynamic port via the PORT environment variable
+    port = int(os.environ.get('PORT', 8000))
+    app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
