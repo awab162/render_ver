@@ -17,6 +17,7 @@ import html
 import concurrent.futures
 import importlib
 import psiphon_manager
+import po_generator
 importlib.reload(yt_dlp)
 app = Flask(__name__)
 CORS(app, resources={
@@ -178,6 +179,10 @@ def debug_psiphon():
         'proxy_url':          CONFIG.get('YT_PROXY', None),
         'yt_proxy_active':    bool(CONFIG.get('YT_PROXY', '')),
     })
+
+@app.route('/debug/po-token')
+def debug_po_token():
+    return jsonify(po_generator.get_cache_status())
 class VideoDownloader:
     def __init__(self):
         self.downloads_dir = Path(CONFIG['DOWNLOADS_DIR'])
@@ -204,10 +209,18 @@ class VideoDownloader:
             'no_check_certificate': True,
         }
 
-        po_token = os.environ.get('YT_PO_TOKEN', '')
-        if po_token:
-            opts['extractor_args']['youtube']['po_token'] = [po_token]
-            print("BYPASS: Using PO token from YT_PO_TOKEN env var.")
+        po_token_env = os.environ.get('YT_PO_TOKEN', '')
+        if po_token_env:
+            opts['extractor_args']['youtube']['po_token'] = [po_token_env]
+            print("BYPASS: Using MANUAL PO token from YT_PO_TOKEN env var.")
+        else:
+            token_data = po_generator.get_po_token()
+            if token_data['po_token'] and token_data['visitor_data']:
+                opts['extractor_args']['youtube']['po_token'] = [token_data['po_token']]
+                opts['extractor_args']['youtube']['visitor_data'] = [token_data['visitor_data']]
+                print("BYPASS: Using AUTO-GENERATED PO token (cached).")
+            else:
+                print("BYPASS: PO token generation failed or returned empty — proceeding without.")
 
         cookies_env = CONFIG.get('YOUTUBE_COOKIES_ENV', '')
         if cookies_env and len(cookies_env.strip()) > 10:
@@ -618,7 +631,11 @@ class VideoDownloader:
                 with yt_dlp.YoutubeDL(base_ydl_opts) as ydl:
                     info = ydl.extract_info(url, download=False) 
             except Exception as e_initial:
+                err_str = str(e_initial).lower()
                 print(f"VID_INFO: Initial extraction failed with cookies: {e_initial}. Retrying without cookies...")
+                if any(k in err_str for k in ['403', 'bot', 'sign in to confirm', 'forbidden', 'captcha']):
+                    print("VID_INFO: Detected YouTube block. Invalidating PO token cache...")
+                    po_generator.invalidate_cache()
                 was_forced_nocookies = True
                 nocookie_opts = {
                     'quiet': True,
@@ -782,7 +799,11 @@ class VideoDownloader:
                     self._update_status(request_id, 'processing', 'Downloading video...')
                     ydl.download([url])
             except Exception as e_download:
+                err_str = str(e_download).lower()
                 print(f"VIDEO_DOWNLOAD: Initial download failed: {e_download}. Retrying without cookies...")
+                if any(k in err_str for k in ['403', 'bot', 'sign in to confirm', 'forbidden', 'captcha']):
+                    print("VIDEO_DOWNLOAD: Detected YouTube block. Invalidating PO token cache...")
+                    po_generator.invalidate_cache()
                 self._update_status(request_id, 'processing', 'Initial download failed. Retrying without cookies...')
                 nocookie_opts = {
                     **ydl_opts,
@@ -945,7 +966,11 @@ class VideoDownloader:
                     self._update_status(request_id, 'processing', 'Downloading video...')
                     ydl.download([url])
             except Exception as e_download:
+                err_str = str(e_download).lower()
                 print(f"DOWNLOAD: Initial download failed: {e_download}. Retrying without cookies...")
+                if any(k in err_str for k in ['403', 'bot', 'sign in to confirm', 'forbidden', 'captcha']):
+                    print("DOWNLOAD: Detected YouTube block. Invalidating PO token cache...")
+                    po_generator.invalidate_cache()
                 self._update_status(request_id, 'processing', 'Initial download failed. Retrying without cookies...')
                 nocookie_opts = self._get_ydl_options(output_template_path, resolution, progress_hook_key, codec, force_no_cookies=True)
                 with yt_dlp.YoutubeDL(nocookie_opts) as ydl:
@@ -1147,7 +1172,11 @@ class VideoDownloader:
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     ydl.download([url])
             except Exception as e_download:
+                err_str = str(e_download).lower()
                 print(f"PLAYLIST_DOWNLOAD: Initial playlist download failed: {e_download}. Retrying without cookies...")
+                if any(k in err_str for k in ['403', 'bot', 'sign in to confirm', 'forbidden', 'captcha']):
+                    print("PLAYLIST_DOWNLOAD: Detected YouTube block. Invalidating PO token cache...")
+                    po_generator.invalidate_cache()
                 self._update_status(request_id, 'processing', f'Initial download failed. Retrying without cookies...')
                 nocookie_opts = {
                     **ydl_opts,

@@ -57,3 +57,7 @@ services:
       # Python output is unbuffered — important for real-time Render logs
       - key: PYTHONUNBUFFERED
         value: "1"
+
+      # PO Token Cache Duration in Hours
+      - key: PO_TOKEN_CACHE_HOURS
+        value: "2"

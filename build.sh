@@ -7,6 +7,30 @@
 set -e  # exit immediately on any error
 
 echo "========================================"
+echo "  Build Step 0: Install Node.js 20 LTS"
+echo "========================================"
+if command -v node &>/dev/null; then
+    echo "[OK] Node.js already installed: $(node --version)"
+else
+    echo "[INFO] Installing Node.js..."
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+    apt-get install -y -qq nodejs
+    echo "[OK] Node.js installed: $(node --version)"
+fi
+
+echo ""
+echo "========================================"
+echo "  Build Step 0.5: Install PO Token Generator"
+echo "========================================"
+if command -v youtube-po-token-generator &>/dev/null; then
+    echo "[OK] youtube-po-token-generator already installed"
+else
+    npm install -g youtube-po-token-generator@latest
+    echo "[OK] youtube-po-token-generator installed"
+fi
+
+echo ""
+echo "========================================"
 echo "  Build Step 1: Install FFmpeg"
 echo "========================================"
 
