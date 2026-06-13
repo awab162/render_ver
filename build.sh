@@ -22,11 +22,12 @@ echo ""
 echo "========================================"
 echo "  Build Step 0.5: Install PO Token Generator"
 echo "========================================"
-if command -v youtube-po-token-generator &>/dev/null; then
-    echo "[OK] youtube-po-token-generator already installed"
+if [ -f "node_modules/.bin/youtube-po-token-generator" ]; then
+    echo "[OK] youtube-po-token-generator already installed locally"
 else
-    npm install -g youtube-po-token-generator@latest
-    echo "[OK] youtube-po-token-generator installed"
+    echo "[INFO] Installing youtube-po-token-generator locally..."
+    npm install youtube-po-token-generator@latest --no-audit --no-fund
+    echo "[OK] youtube-po-token-generator installed locally"
 fi
 
 echo ""

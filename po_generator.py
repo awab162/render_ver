@@ -69,7 +69,14 @@ def _generate_new_token():
 
     # Render OOM / Timeout protection: 30s timeout on subprocess
     # Run in a headless manner without full browser (the generator uses jsdom under the hood)
-    cmd = ["youtube-po-token-generator"]
+    # Check local node_modules first, then fall back to global path
+    local_bin = os.path.join(os.path.abspath('.'), 'node_modules', '.bin', 'youtube-po-token-generator')
+    if os.path.exists(local_bin):
+        cmd = [local_bin]
+    elif os.path.exists(local_bin + ".cmd"):
+        cmd = [local_bin + ".cmd"]
+    else:
+        cmd = ["youtube-po-token-generator"]
     try:
         logger.info("[PO-TOKEN] Invoking youtube-po-token-generator subprocess...")
         use_shell = (sys.platform == 'win32')
